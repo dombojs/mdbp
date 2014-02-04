@@ -1,0 +1,35 @@
+{
+  "name": "mdbp",
+  "description": "markup driven build process",
+  "version": "0.0.1",
+  "homepage": "https://github.com/dombojs/mdbp",
+  "author": {
+    "name": "dshimkoski",
+    "email": "denny.webdev@gmail.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/dombojs/mdbp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dombojs/mdbp/issues"
+  },
+  "keywords": [
+    "mdbp"
+  ],
+  "preferGlobal": "true",
+  "bin": {
+    "mdbp": "./bin/mdbp"
+  },
+  "dependencies": {
+    "css-parse": "~1.7.0",
+    "glob": "~3.2.8",
+    "component-builder": "~0.12.0",
+    "winston": "~0.7.2",
+    "cheerio": "~0.13.1"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">= 0.8.0"
+  }
+}

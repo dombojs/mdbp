@@ -1,0 +1,460 @@
+#!/usr/bin/env node
+
+require('shelljs/global');
+
+var log = require('winston').cli();
+var path = require('path');
+var fs = require('fs');
+var glob = require('glob');
+var cheerio = require('cheerio');
+var cssp = require('css-parse');
+var Builder = require('component-builder');
+var lf = require('os').EOL;
+
+var mdbp = path.join(pwd(), '.mdbp');
+var isInit = process.argv[2] === 'init';
+
+if (!fs.existsSync(mdbp) || isInit) {
+
+    if (!isInit) {
+        log.error('.mdbp directory not found');
+        process.exit(1);
+    }
+
+} else {
+
+    var mdbp = require(mdbp);
+    var paths = mdbp.paths;
+    var meta = glob.sync(paths.components + '/**/component.json').map(parseComponentJSON).filter(mdbp.markupDriven);
+    var styleMeta = meta.filter(function(cmp) { return cmp.styles });
+
+}
+
+var program = require('commander');
+
+program.version('0.1.0');
+
+program
+    .command('init <type>')
+    .description('Initialize .mdbp in current working directory')
+    .option('-f, --force', 'overwrite existing .mdbp directory')
+    .action(init);
+
+program
+    .command('apps')
+    .description('List apps')
+    .action(apps);
+
+program
+    .command('bundles')
+    .description('List bundles')
+    .action(bundles);
+
+program
+    .command('scan [app]')
+    .description('Scan app markup and create bundle component')
+    .option('-d, --dry', 'skip bundle creation')
+    .action(scan);
+
+program
+    .command('clean [bundle]')
+    .description('Clean bundle build directory')
+    .action(clean);
+
+program
+    .command('build [bundle]')
+    .description('Build bundle component')
+    .action(build);
+
+program
+    .command('commit [bundle]')
+    .description('Commit build to destination')
+    .action(commit);
+
+program
+    .command('all [bundle]')
+    .description('Clean, build, and commit bundle')
+    .action(all);
+
+program.parse(process.argv);
+
+if (program.args.length < 1) program.help();
+
+function afterBuild() {}
+
+function init(type, o) {
+
+    var dir = path.join(pwd(), '.mdbp');
+
+    if (fs.existsSync(dir)) {
+        if (!o.force) {
+            log.error('.mdbp directory already exists, use --force to overwrite');
+            process.exit(1);
+        } else {
+            rm('-rf', dir);
+        }
+    }
+
+    var index = 'module.exports = require("'+type+'");'
+    var pkg = {dependencies: {}};
+    pkg.dependencies[type] = '*';
+
+    mkdir(dir);
+    writeJSON(path.join(dir, 'package.json'), pkg);
+    fs.writeFileSync(path.join(dir, 'index.js'), index);
+    cd(dir);
+    exec('npm install');
+
+    log.info('created .mdbp directory');
+
+}
+
+function apps() {
+    ls(paths.apps).forEach(function(app) {
+        console.log(app);
+    });
+}
+
+function bundles() {
+    ls(paths.bundles).forEach(function(bundle) {
+        console.log(bundle);
+    });
+}
+
+function all(bundle) {
+    var next = [];
+    if (!bundle) {
+        next = ls(paths.bundles);
+        bundle = next.shift();
+    }
+    clean(bundle);
+    build(bundle);
+    afterBuild = function() {
+        commit(bundle);
+        bundle = next.shift();
+        if (bundle) all(bundle);
+    };
+}
+
+function scan(app, o) {
+
+    if (!app) {
+        return ls(paths.apps).forEach(function(app) {
+            scan(app, o);
+        });
+    }
+
+    var basePath = path.join(paths.apps, app),
+        pattern = path.join(basePath, paths.markup),
+        files = glob.sync(pattern),
+        components = {},
+        matches = {};
+
+    log.info('APP: %s', app);
+
+    if (!files.length) {
+
+        log.warn('no markup found');
+
+    } else {
+
+        files.forEach(function(file) {
+
+            log.info(path.normalize(file).replace(basePath+path.sep, ''));
+
+            var $ = cheerio.load(fs.readFileSync(file, 'utf8'));
+
+            $('[data-js]').each(function() {
+                plugins(this.attr('data-js')).forEach(function(cmp) {
+                    var p = path.join(paths.components, cmp.dir);
+                    if (!fs.existsSync(p)) {
+                        log.error(cmp.dir + ' does not exist');
+                    } else {
+                        cmp.jsPlugin = true;
+                        components[cmp.repo] = cmp;
+                    }
+                });
+            });
+
+            for (var i = 0, len = styleMeta.length; i < len; i++) {
+                if (matches[i]) continue;
+                var match = matchStylesheet($, styleMeta[i]);
+                if (match) {
+                    components[match.cmp.repo] = match.cmp;
+                    matches[i] = match;
+                }
+            }
+
+        });
+
+        createBundle(app, components, o.dry);
+
+    }
+
+}
+
+function parseComponentJSON(file) {
+    var json = readJSON(file),
+        dir = path.dirname(file), css;
+    json.file = file;
+    return json;
+}
+
+function plugins(chain) {
+
+    var cmps = [];
+
+    chain = JSON.parse('[' + chain.replace(/ /g, '') + ']');
+
+    chain.forEach(function(call) {
+
+        var fn = call[0].split('|')[0],
+            repo = mdbp.plugin(fn);
+
+        cmps.push({
+            name: path.basename(repo),
+            repo: repo,
+            dir: repo.replace('/', '-'),
+            args: call[1] && typeof call[1] !== 'string' ? Object.keys(call[1]) : null
+        });
+
+    });
+
+    return cmps;
+
+}
+
+function matchStylesheet($, cmp) {
+
+    if (cmp.styles && !cmp.cssp) {
+        cmp.cssp = [];
+        for (var i = 0, len = cmp.styles.length; i < len; i++) {
+            var css = fs.readFileSync(path.join(dir, cmp.styles[i]), 'utf8');
+            cmp.cssp[i] = cssp(mdbp.cssForScan(css));
+        }
+    }
+
+    for (var i = 0, len = cmp.cssp.length; i < len; i++) {
+        var rules = cmp.cssp[i].stylesheet.rules;
+        for (var j = 0, jlen = rules.length; j < jlen; j++) {
+            var selectors = rules[j].selectors;
+            if (selectors) {
+                for (var k = 0, klen = selectors.length; k < klen; k++) {
+                    var s = selectors[k];
+                    if ($(s).length) return {
+                        cmp: cmp,
+                        file: cmp.styles[i],
+                        selector: s
+                    };
+                }
+            }
+        }
+    }
+
+}
+
+function createBundle(app, components, dry) {
+
+    var p = path.join(paths.bundles, app),
+        repos = Object.keys(components),
+        js = [];
+
+    if (repos.length) {
+
+        mkdir('-p', p);
+
+        var json = mdbp.bundle(app);
+        repos.forEach(function(repo) {
+            json.dependencies[repo] = '*';
+            var cmp = components[repo];
+            if (cmp.jsPlugin) {
+                js.push(cmp.name);
+            }
+        });
+
+        if (dry) {
+            console.log(json, js);
+        } else {
+            writeJSON(path.join(p, 'component.json'), json);
+        }
+
+        js.push('boot');
+
+        var requires = "require('" + js.join("');"+lf+"require('")+"');";
+        fs.writeFileSync(path.join(p, 'index.js'), requires);
+
+    }
+
+}
+
+function clean(bundle) {
+
+    if (!bundle) {
+        return ls(paths.bundles).forEach(bundle);
+    }
+
+    log.info('cleaning ' + bundle);
+
+    rm('-rf', path.join(paths.bundles, bundle, 'build'));
+
+}
+
+function build(bundle) {
+
+    if (!bundle) {
+        return ls(paths.bundles).forEach(bundle);
+    }
+
+    log.info('building ' + bundle);
+
+    var dir = path.join(paths.bundles, bundle);
+    var dirBuild = path.join(dir, 'build');
+
+    var builder = new Builder(dir);
+
+    builder.copyAssetsTo(dirBuild);
+
+    function save(ext) {
+        return function(file, content, unversioned) {
+            if (unversioned) {
+                fs.writeFile(path.join(dirBuild, file + ext), content);
+                return file + ext;
+            }
+            var src = file + ext,
+                dest = file + '.' + mdbp.hash(content) + ext,
+                destUrl = url(dest);
+            fs.writeFile(path.join(dirBuild, dest), content);
+            mdbp.versions[url(src)] = {url: destUrl, type: ext.substr(1)};
+            return destUrl;
+        };
+    }
+
+    mdbp.versions = {};
+
+    builder.build(function(err, obj) {
+        if (err) throw err;
+        versionAssets(dirBuild);
+        if (obj.css) mdbp.css(obj.css, save('.css'), log);
+        if (obj.js) mdbp.js(globalScripts(bundle) + obj.js, save('.js'), log);
+        writeJSON(path.join(dirBuild, 'versions.json'), mdbp.versions);
+        afterBuild();
+    });
+
+}
+
+function globalScripts(bundle) {
+
+    var cmp = readJSON(path.join(paths.bundles, bundle, 'component.json')), js = '';
+
+    if (cmp.globals) {
+        var files = mglob(cmp.globals, {cwd: paths.globals});
+        files.forEach(function(f) {
+            js += fs.readFileSync(path.join(paths.globals, f), 'utf8');
+        });
+        if (!js.length) log.warn('global scripts empty');
+    }
+
+    return js;
+
+}
+
+function versionAssets(dir) {
+
+    glob.sync('**/*.*', {cwd: dir}).forEach(function(src) {
+
+        var file = path.join(dir, src),
+            cmpdir = path.dirname(src),
+            ext = path.extname(src),
+            md5 = mdbp.hash(fs.readFileSync(file, 'utf8')),
+            dest = src.replace(ext, '.' + md5 + ext),
+            type = null;
+
+        if (cmpdir.length) {
+
+            var cmp = readJSON(path.join(paths.components, cmpdir, 'component.json')),
+                basename = path.basename(src);
+
+            if (cmp.images && ~cmp.images.indexOf(basename)) type = 'image';
+            else if (cmp.fonts && ~cmp.fonts.indexOf(basename)) type = 'font';
+
+        }
+
+        log.info('saving ' + dest);
+        fs.renameSync(file, path.join(dir, dest));
+
+        mdbp.versions[url(src)] = {url: url(dest), type:type};
+
+    });
+
+}
+
+function commit(bundle) {
+
+    if (!bundle) {
+        return ls(paths.bundles).forEach(commit);
+    }
+
+    log.info('committing ' + bundle);
+
+    var dirBuild = path.join(paths.bundles, bundle, 'build');
+    var dirCommit = path.join(paths.commit);
+    var dirInclude = path.join(dirCommit, paths.assets.include, bundle);
+    var shared = ['image', 'font'];
+    var css = [], js = [];
+
+    if (!mdbp.versions) {
+        mdbp.versions = readJSON(path.join(dirBuild, 'versions.json'));
+    }
+
+    Object.keys(mdbp.versions).forEach(function(src) {
+
+        var asset = mdbp.versions[src],
+            append = ~shared.indexOf(asset.type) ? '' : bundle,
+            dir = path.join(dirCommit, paths.assets[asset.type], append),
+            dest = path.join(dir, asset.url);
+
+        if (fs.existsSync(dest)) {
+            log.warn(dest + ' exists, skipping');
+        } else {
+            mkdir('-p', path.join(dir, path.dirname(asset.url)));
+            cp(path.join(dirBuild, asset.url), dest);
+        }
+
+        if (asset.type === 'css') css.push(asset);
+        else if (asset.type === 'js') js.push(asset);
+
+    });
+
+    function save(file, content) {
+        var dest = path.join(dirInclude, file);
+        fs.writeFile(dest, content);
+        return dest;
+    }
+
+    mkdir('-p', dirInclude);
+    mdbp.commit(bundle, css, js, save);
+
+}
+
+function url(file) {
+    return file.replace(/\\/g, '/');
+}
+
+function writeJSON(file, json) {
+    return fs.writeFileSync(file, JSON.stringify(json, null, 4));
+}
+
+function readJSON(file) {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+function mglob(pattern, options) {
+    if (!Array.isArray(pattern)) {
+        return glob.sync(pattern, options);
+    }
+    var files = [];
+    pattern.forEach(function(p) {
+        files = files.concat(glob.sync(p, options));
+    });
+    return files;
+}
