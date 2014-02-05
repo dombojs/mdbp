@@ -11,28 +11,9 @@ var cssp = require('css-parse');
 var Builder = require('component-builder');
 var lf = require('os').EOL;
 
-var mdbp = path.join(pwd(), '.mdbp');
-var isInit = process.argv[2] === 'init';
-
-if (!fs.existsSync(mdbp) || isInit) {
-
-    if (!isInit) {
-        log.error('.mdbp directory not found');
-        process.exit(1);
-    }
-
-} else {
-
-    var mdbp = require(mdbp);
-    var paths = mdbp.paths;
-    var meta = glob.sync(paths.components + '/**/component.json').map(parseComponentJSON).filter(mdbp.markupDriven);
-    var styleMeta = meta.filter(function(cmp) { return cmp.styles });
-
-}
-
 var program = require('commander');
 
-program.version('0.1.0');
+program.version('0.0.6');
 
 program
     .command('init <type>')
@@ -72,9 +53,25 @@ program
     .action(commit);
 
 program
-    .command('all [bundle]')
+    .command('run [bundle]')
     .description('Clean, build, and commit bundle')
-    .action(all);
+    .action(run);
+
+var mdbpDir = path.join(pwd(), '.mdbp');
+
+if (!fs.existsSync(mdbpDir)) {
+
+    log.error('.mdbp directory not found, run `mdbp init`');
+    process.exit(1);
+
+} else {
+
+    var mdbp = require(mdbpDir);
+    var paths = mdbp.paths;
+    var meta = glob.sync(paths.components + '/**/component.json').map(parseComponentJSON).filter(mdbp.markupDriven);
+    var styleMeta = meta.filter(function(cmp) { return cmp.styles });
+
+}
 
 program.parse(process.argv);
 
@@ -84,14 +81,12 @@ function afterBuild() {}
 
 function init(type, o) {
 
-    var dir = path.join(pwd(), '.mdbp');
-
-    if (fs.existsSync(dir)) {
+    if (fs.existsSync(mdbpDir)) {
         if (!o.force) {
             log.error('.mdbp directory already exists, use --force to overwrite');
             process.exit(1);
         } else {
-            rm('-rf', dir);
+            rm('-rf', mdbpDir);
         }
     }
 
@@ -99,10 +94,10 @@ function init(type, o) {
     var pkg = {dependencies: {}};
     pkg.dependencies[type] = '*';
 
-    mkdir(dir);
-    writeJSON(path.join(dir, 'package.json'), pkg);
-    fs.writeFileSync(path.join(dir, 'index.js'), index);
-    cd(dir);
+    mkdir(mdbpDir);
+    writeJSON(path.join(mdbpDir, 'package.json'), pkg);
+    fs.writeFileSync(path.join(mdbpDir, 'index.js'), index);
+    cd(mdbpDir);
     exec('npm install');
 
     log.info('created .mdbp directory');
@@ -121,7 +116,7 @@ function bundles() {
     });
 }
 
-function all(bundle) {
+function run(bundle) {
     var next = [];
     if (!bundle) {
         next = ls(paths.bundles);
@@ -132,7 +127,7 @@ function all(bundle) {
     afterBuild = function() {
         commit(bundle);
         bundle = next.shift();
-        if (bundle) all(bundle);
+        if (bundle) run(bundle);
     };
 }
 
@@ -170,17 +165,20 @@ function scan(app, o) {
                     if (!fs.existsSync(p)) {
                         log.error(cmp.dir + ' does not exist');
                     } else {
+                        log.info(cmp.repo + ' called');
                         cmp.jsPlugin = true;
                         components[cmp.repo] = cmp;
                     }
                 });
             });
 
-            for (var i = 0, len = styleMeta.length; i < len; i++) {
+            var m = styleMeta.filter(function(t) { return !components[t.repo] });
+
+            for (var i = 0, len = m.length; i < len; i++) {
                 if (matches[i]) continue;
-                var match = matchStylesheet($, styleMeta[i]);
+                var match = matchStylesheet($, m[i]);
                 if (match) {
-                    components[match.cmp.repo] = match.cmp;
+                    components[match.cmp.repo] = {css: match.cmp};
                     matches[i] = match;
                 }
             }
@@ -264,6 +262,7 @@ function createBundle(app, components, dry) {
         mkdir('-p', p);
 
         var json = mdbp.bundle(app);
+
         repos.forEach(function(repo) {
             json.dependencies[repo] = '*';
             var cmp = components[repo];
@@ -302,42 +301,65 @@ function clean(bundle) {
 function build(bundle) {
 
     if (!bundle) {
-        return ls(paths.bundles).forEach(bundle);
+        return ls(paths.bundles).forEach(build);
     }
 
     log.info('building ' + bundle);
 
     var dir = path.join(paths.bundles, bundle);
-    var dirBuild = path.join(dir, 'build');
+    var buildDir = path.join(dir, 'build');
+
+    if (!fs.existsSync(buildDir)) mkdir(buildDir);
 
     var builder = new Builder(dir);
 
-    builder.copyAssetsTo(dirBuild);
+    builder.copyAssetsTo(buildDir);
+
+    if (mdbp.copyFiles) builder.copyFiles();
 
     function save(ext) {
+
         return function(file, content, unversioned) {
+
             if (unversioned) {
-                fs.writeFile(path.join(dirBuild, file + ext), content);
+                fs.writeFile(path.join(buildDir, file + ext), content);
                 return file + ext;
             }
+
             var src = file + ext,
                 dest = file + '.' + mdbp.hash(content) + ext,
                 destUrl = url(dest);
-            fs.writeFile(path.join(dirBuild, dest), content);
+
+            fs.writeFile(path.join(buildDir, dest), content);
             mdbp.versions[url(src)] = {url: destUrl, type: ext.substr(1)};
+
             return destUrl;
+
         };
+
     }
 
     mdbp.versions = {};
 
     builder.build(function(err, obj) {
+
         if (err) throw err;
-        versionAssets(dirBuild);
+
+        versionAssets(buildDir);
+
         if (obj.css) mdbp.css(obj.css, save('.css'), log);
-        if (obj.js) mdbp.js(globalScripts(bundle) + obj.js, save('.js'), log);
-        writeJSON(path.join(dirBuild, 'versions.json'), mdbp.versions);
+
+        var js = globalScripts(bundle);
+
+        if (obj.js || js) {
+            js += obj.require + obj.js;
+            mdbp.js(js, save('.js'), log);
+        }
+
+        writeJSON(path.join(buildDir, 'versions.json'), mdbp.versions);
+
         afterBuild();
+
     });
 
 }
@@ -363,15 +385,15 @@ function versionAssets(dir) {
     glob.sync('**/*.*', {cwd: dir}).forEach(function(src) {
 
         var file = path.join(dir, src),
-            cmpdir = path.dirname(src),
+            cmpDir = path.dirname(src),
             ext = path.extname(src),
             md5 = mdbp.hash(fs.readFileSync(file, 'utf8')),
             dest = src.replace(ext, '.' + md5 + ext),
             type = null;
 
-        if (cmpdir.length) {
+        if (cmpDir.length > 1) {
 
-            var cmp = readJSON(path.join(paths.components, cmpdir, 'component.json')),
+            var cmp = readJSON(path.join(paths.components, cmpDir, 'component.json')),
                 basename = path.basename(src);
 
             if (cmp.images && ~cmp.images.indexOf(basename)) type = 'image';
@@ -396,28 +418,28 @@ function commit(bundle) {
 
     log.info('committing ' + bundle);
 
-    var dirBuild = path.join(paths.bundles, bundle, 'build');
-    var dirCommit = path.join(paths.commit);
-    var dirInclude = path.join(dirCommit, paths.assets.include, bundle);
+    var buildDir = path.join(paths.bundles, bundle, 'build');
+    var commitDir = path.join(paths.commit);
+    var includeDir = path.join(commitDir, paths.assets.include, bundle);
     var shared = ['image', 'font'];
     var css = [], js = [];
 
     if (!mdbp.versions) {
-        mdbp.versions = readJSON(path.join(dirBuild, 'versions.json'));
+        mdbp.versions = readJSON(path.join(buildDir, 'versions.json'));
     }
 
     Object.keys(mdbp.versions).forEach(function(src) {
 
         var asset = mdbp.versions[src],
             append = ~shared.indexOf(asset.type) ? '' : bundle,
-            dir = path.join(dirCommit, paths.assets[asset.type], append),
+            dir = path.join(commitDir, paths.assets[asset.type], append),
             dest = path.join(dir, asset.url);
 
         if (fs.existsSync(dest)) {
             log.warn(dest + ' exists, skipping');
         } else {
             mkdir('-p', path.join(dir, path.dirname(asset.url)));
-            cp(path.join(dirBuild, asset.url), dest);
+            cp(path.join(buildDir, asset.url), dest);
         }
 
         if (asset.type === 'css') css.push(asset);
@@ -426,12 +448,12 @@ function commit(bundle) {
     });
 
     function save(file, content) {
-        var dest = path.join(dirInclude, file);
+        var dest = path.join(includeDir, file);
         fs.writeFile(dest, content);
         return dest;
     }
 
-    mkdir('-p', dirInclude);
+    mkdir('-p', includeDir);
     mdbp.commit(bundle, css, js, save);
 
 }
