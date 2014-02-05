@@ -1,7 +1,7 @@
 {
   "name": "mdbp",
   "description": "markup driven build process",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "homepage": "https://github.com/dombojs/mdbp",
   "author": {
     "name": "dshimkoski",

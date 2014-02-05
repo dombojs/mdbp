@@ -11,9 +11,11 @@ var cssp = require('css-parse');
 var Builder = require('component-builder');
 var lf = require('os').EOL;
 
+var mdbpDir = path.join(pwd(), '.mdbp');
+
 var program = require('commander');
 
-program.version('0.0.6');
+program.version('0.0.7');
 
 program
     .command('init <type>')
@@ -24,58 +26,58 @@ program
 program
     .command('apps')
     .description('List apps')
-    .action(apps);
+    .action(setupThen(apps));
 
 program
     .command('bundles')
     .description('List bundles')
-    .action(bundles);
+    .action(setupThen(bundles));
 
 program
     .command('scan [app]')
     .description('Scan app markup and create bundle component')
     .option('-d, --dry', 'skip bundle creation')
-    .action(scan);
+    .action(setupThen(scan));
 
 program
     .command('clean [bundle]')
     .description('Clean bundle build directory')
-    .action(clean);
+    .action(setupThen(clean));
 
 program
     .command('build [bundle]')
     .description('Build bundle component')
-    .action(build);
+    .action(setupThen(build));
 
 program
     .command('commit [bundle]')
     .description('Commit build to destination')
-    .action(commit);
+    .action(setupThen(commit));
 
 program
     .command('run [bundle]')
     .description('Clean, build, and commit bundle')
-    .action(run);
-
-var mdbpDir = path.join(pwd(), '.mdbp');
-
-if (!fs.existsSync(mdbpDir)) {
-
-    log.error('.mdbp directory not found, run `mdbp init`');
-    process.exit(1);
-
-} else {
-
-    var mdbp = require(mdbpDir);
-    var paths = mdbp.paths;
-    var meta = glob.sync(paths.components + '/**/component.json').map(parseComponentJSON).filter(mdbp.markupDriven);
-    var styleMeta = meta.filter(function(cmp) { return cmp.styles });
-
-}
+    .action(setupThen(run));
 
 program.parse(process.argv);
 
 if (program.args.length < 1) program.help();
+
+var mdbp, paths, meta, styleMeta;
+
+function setupThen(action) {
+    return function() {
+        if (!fs.existsSync(mdbpDir)) {
+            log.error('.mdbp directory not found, run `mdbp init`');
+            process.exit(1);
+        }
+        mdbp = require(mdbpDir);
+        paths = mdbp.paths;
+        meta = glob.sync(paths.components + '/**/component.json').map(parseComponentJSON).filter(mdbp.markupDriven);
+        styleMeta = meta.filter(function(cmp) { return cmp.styles });
+        action.apply(null, arguments);
+    }
+}
 
 function afterBuild() {}
 
