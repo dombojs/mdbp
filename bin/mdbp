@@ -194,8 +194,7 @@ function scan(app, o) {
 }
 
 function parseComponentJSON(file) {
-    var json = readJSON(file),
-        dir = path.dirname(file), css;
+    var json = readJSON(file);
     json.file = file;
     return json;
 }
@@ -227,6 +226,7 @@ function plugins(chain) {
 function matchStylesheet($, cmp) {
 
     if (cmp.styles && !cmp.cssp) {
+        var dir = path.dirname(cmp.file);
         cmp.cssp = [];
         for (var i = 0, len = cmp.styles.length; i < len; i++) {
             var css = fs.readFileSync(path.join(dir, cmp.styles[i]), 'utf8');
