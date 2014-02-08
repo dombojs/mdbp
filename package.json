@@ -1,7 +1,7 @@
 {
   "name": "mdbp",
   "description": "markup driven build process",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "homepage": "https://github.com/dombojs/mdbp",
   "author": {
     "name": "dshimkoski",
@@ -28,7 +28,8 @@
     "winston": "~0.7.2",
     "cheerio": "~0.13.1",
     "shelljs": "~0.2.6",
-    "commander": "~2.1.0"
+    "commander": "~2.1.0",
+    "fs.notify": "0.0.4"
   },
   "license": "MIT",
   "engines": {

@@ -15,7 +15,7 @@ var lf = require('os').EOL;
 var mdbpDir = process.env.MDBP_DIR || path.join(pwd(), '.mdbp');
 
 var program = require('commander');
-program.version('0.0.8');
+program.version('0.0.9');
 
 program
     .command('init <type>')
