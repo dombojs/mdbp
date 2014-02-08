@@ -8,14 +8,14 @@ var fs = require('fs');
 var glob = require('glob');
 var cheerio = require('cheerio');
 var cssp = require('css-parse');
+var Notify = require('fs.notify');
 var Builder = require('component-builder');
 var lf = require('os').EOL;
 
-var mdbpDir = path.join(pwd(), '.mdbp');
+var mdbpDir = process.env.MDBP_DIR || path.join(pwd(), '.mdbp');
 
 var program = require('commander');
-
-program.version('0.0.7');
+program.version('0.0.8');
 
 program
     .command('init <type>')
@@ -32,6 +32,11 @@ program
     .command('bundles')
     .description('List bundles')
     .action(setupThen(bundles));
+
+program
+    .command('watch <bundle>')
+    .description('Watch markup')
+    .action(setupThen(watch));
 
 program
     .command('scan [app]')
@@ -59,6 +64,17 @@ program
     .description('Clean, build, and commit bundle')
     .action(setupThen(run));
 
+var watcher = new Notify();
+
+watcher.on('change', function (file, event, path) {
+    log.info(file + ' - ' + event + ' detected');
+    change();
+});
+
+watcher.on('error', function (err) {
+    log.error(err);
+});
+
 program.parse(process.argv);
 
 if (program.args.length < 1) program.help();
@@ -78,8 +94,6 @@ function setupThen(action) {
         action.apply(null, arguments);
     }
 }
-
-function afterBuild() {}
 
 function init(type, o) {
 
@@ -118,6 +132,22 @@ function bundles() {
     });
 }
 
+function change() {}
+function watch(app) {
+    var appMarkup = path.join(app, paths.markup);
+        markup = path.join(paths.apps, appMarkup);
+    afterRun = function() {
+        log.info('watching ' + appMarkup);
+    };
+    change = function() {
+        scan(app, {});
+        run(app);
+    }
+    watcher.add(glob.sync(markup));
+    log.info('watching ' + appMarkup);
+}
+
+function afterRun() {}
 function run(bundle) {
     var next = [];
     if (!bundle) {
@@ -129,6 +159,7 @@ function run(bundle) {
     afterBuild = function() {
         commit(bundle);
         bundle = next.shift();
+        afterRun();
         if (bundle) run(bundle);
     };
 }
@@ -147,7 +178,7 @@ function scan(app, o) {
         components = {},
         matches = {};
 
-    log.info('APP: %s', app);
+    log.info('scanning ' + app);
 
     if (!files.length) {
 
@@ -180,7 +211,8 @@ function scan(app, o) {
                 if (matches[i]) continue;
                 var match = matchStylesheet($, m[i]);
                 if (match) {
-                    components[match.cmp.repo] = {css: match.cmp};
+                    log.info(match.cmp.repo + ' matched by ' + match.selector);
+                    components[match.cmp.repo] = match.cmp;
                     matches[i] = match;
                 }
             }
@@ -259,7 +291,11 @@ function createBundle(app, components, dry) {
         repos = Object.keys(components),
         js = [];
 
-    if (repos.length) {
+    if (!repos.length) {
+
+        log.warn('empty bundle');
+
+    } else {
 
         mkdir('-p', p);
 
@@ -282,6 +318,8 @@ function createBundle(app, components, dry) {
         js.push('boot');
 
         var requires = "require('" + js.join("');"+lf+"require('")+"');";
+
+        log.info('writing %s bundle', app);
         fs.writeFileSync(path.join(p, 'index.js'), requires);
 
     }
@@ -291,7 +329,7 @@ function createBundle(app, components, dry) {
 function clean(bundle) {
 
     if (!bundle) {
-        return ls(paths.bundles).forEach(bundle);
+        return ls(paths.bundles).forEach(clean);
     }
 
     log.info('cleaning ' + bundle);
@@ -300,6 +338,7 @@ function clean(bundle) {
 
 }
 
+function afterBuild() {}
 function build(bundle) {
 
     if (!bundle) {
@@ -438,8 +477,9 @@ function commit(bundle) {
             dest = path.join(dir, asset.url);
 
         if (fs.existsSync(dest)) {
-            log.warn(dest + ' exists, skipping');
+            log.warn(asset.url + ' exists, skipping');
         } else {
+            log.info('copying ' + asset.url);
             mkdir('-p', path.join(dir, path.dirname(asset.url)));
             cp(path.join(buildDir, asset.url), dest);
         }
@@ -451,7 +491,12 @@ function commit(bundle) {
 
     function save(file, content) {
         var dest = path.join(includeDir, file);
-        fs.writeFile(dest, content);
+        if (fs.existsSync(dest)) {
+            log.warn(file + ' exists, skipping');
+        } else {
+            log.info('writing include ' + file);
+            fs.writeFile(dest, content);
+        }
         return dest;
     }
 
