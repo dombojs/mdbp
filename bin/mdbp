@@ -15,7 +15,7 @@ var lf = require('os').EOL;
 var mdbpDir = process.env.MDBP_DIR || path.join(pwd(), '.mdbp');
 
 var program = require('commander');
-program.version('0.0.9');
+program.version('0.0.10');
 
 program
     .command('init <type>')
@@ -34,7 +34,7 @@ program
     .action(setupThen(bundles));
 
 program
-    .command('watch <bundle>')
+    .command('watch <app>')
     .description('Watch markup')
     .action(setupThen(watch));
 
@@ -412,6 +412,7 @@ function globalScripts(bundle) {
     if (cmp.globals) {
         var files = mglob(cmp.globals, {cwd: paths.globals});
         files.forEach(function(f) {
+            log.info('including global ' + f);
             js += fs.readFileSync(path.join(paths.globals, f), 'utf8');
         });
         if (!js.length) log.warn('global scripts empty');
