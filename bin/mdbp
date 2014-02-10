@@ -15,7 +15,7 @@ var lf = require('os').EOL;
 var mdbpDir = process.env.MDBP_DIR || path.join(pwd(), '.mdbp');
 
 var program = require('commander');
-program.version('0.0.10');
+program.version('0.0.11');
 
 program
     .command('init <type>')
@@ -133,35 +133,54 @@ function bundles() {
 }
 
 function change() {}
+function afterBuild() {}
+function afterRun() {}
+
 function watch(app) {
+
     var appMarkup = path.join(app, paths.markup);
         markup = path.join(paths.apps, appMarkup);
+
     afterRun = function() {
         log.info('watching ' + appMarkup);
     };
+
     change = function() {
         scan(app, {});
         run(app);
     }
+
     watcher.add(glob.sync(markup));
     log.info('watching ' + appMarkup);
+
 }
 
-function afterRun() {}
 function run(bundle) {
-    var next = [];
+
     if (!bundle) {
-        next = ls(paths.bundles);
-        bundle = next.shift();
+
+        var bundles = ls(paths.bundles);
+        if (bundles.length) {
+            run(bundles);
+        }
+
+    } else if (Array.isArray(bundle)) {
+
+        var b = bundle.shift();
+        clean(b);
+        afterBuild = function() {
+            commit(b);
+            afterRun();
+            if (bundle.length) run(bundle);
+        };
+        build(b);
+
+    } else {
+
+        run([bundle]);
+
     }
-    clean(bundle);
-    build(bundle);
-    afterBuild = function() {
-        commit(bundle);
-        bundle = next.shift();
-        afterRun();
-        if (bundle) run(bundle);
-    };
+
 }
 
 function scan(app, o) {
@@ -196,7 +215,7 @@ function scan(app, o) {
                 plugins(this.attr('data-js')).forEach(function(cmp) {
                     var p = path.join(paths.components, cmp.dir);
                     if (!fs.existsSync(p)) {
-                        log.error(cmp.dir + ' does not exist');
+                        log.warn(cmp.dir + ' does not exist');
                     } else {
                         log.info(cmp.repo + ' called');
                         cmp.jsPlugin = true;
@@ -223,12 +242,6 @@ function scan(app, o) {
 
     }
 
-}
-
-function parseComponentJSON(file) {
-    var json = readJSON(file);
-    json.file = file;
-    return json;
 }
 
 function plugins(chain) {
@@ -338,7 +351,6 @@ function clean(bundle) {
 
 }
 
-function afterBuild() {}
 function build(bundle) {
 
     if (!bundle) {
@@ -349,12 +361,21 @@ function build(bundle) {
 
     var dir = path.join(paths.bundles, bundle);
     var buildDir = path.join(dir, 'build');
+    var isAppBundle = ~ls(paths.apps).indexOf(bundle);
+    var aliases = [];
 
     if (!fs.existsSync(buildDir)) mkdir(buildDir);
 
     var builder = new Builder(dir);
 
     builder.copyAssetsTo(buildDir);
+
+    if (!isAppBundle) {
+        builder.hook('before scripts', function(pkg) {
+            var alias = mdbp.alias(pkg.config.repo);
+            if (alias) aliases.push(alias);
+        });
+    }
 
     if (mdbp.copyFiles) builder.copyFiles();
 
@@ -391,11 +412,14 @@ function build(bundle) {
         if (obj.css) mdbp.css(obj.css, save('.css'), log);
 
         var js = globalScripts(bundle);
+        js += (isAppBundle ? obj.require : '')
+        if (obj.js) js += obj.js;
 
-        if (obj.js || js) {
-            js += obj.require + obj.js;
-            mdbp.js(js, save('.js'), log);
-        }
+        if (aliases.length) js += aliases.map(function(a){
+            return lf+'require.alias("'+a[0]+'","'+a[1]+'");';
+        });
+
+        if (js) mdbp.js(js, save('.js'), log);
 
         writeJSON(path.join(buildDir, 'versions.json'), mdbp.versions);
 
@@ -508,6 +532,12 @@ function commit(bundle) {
 
 function url(file) {
     return file.replace(/\\/g, '/');
+}
+
+function parseComponentJSON(file) {
+    var json = readJSON(file);
+    json.file = file;
+    return json;
 }
 
 function writeJSON(file, json) {
