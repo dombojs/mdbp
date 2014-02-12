@@ -351,10 +351,23 @@ function clean(bundle) {
 
 }
 
-function build(bundle) {
+function build(bundles) {
 
-    if (!bundle) {
-        return ls(paths.bundles).forEach(build);
+
+
+    var bundle;
+
+    if (!bundles) {
+        bundles = ls(paths.bundles);
+        if (bundles.length) build(bundles);
+        return;
+    } else if (Array.isArray(bundles)) {
+        bundle = bundles.shift();
+        afterBuild = function() {
+            if (bundles.length) build(bundles);
+        };
+    } else {
+        bundle = bundles;
     }
 
     log.info('building ' + bundle);
@@ -384,7 +397,7 @@ function build(bundle) {
         return function(file, content, unversioned) {
 
             if (unversioned) {
-                fs.writeFile(path.join(buildDir, file + ext), content);
+                fs.writeFileSync(path.join(buildDir, file + ext), content);
                 return file + ext;
             }
 
@@ -392,7 +405,8 @@ function build(bundle) {
                 dest = file + '.' + mdbp.hash(content) + ext,
                 destUrl = url(dest);
 
-            fs.writeFile(path.join(buildDir, dest), content);
+            fs.writeFileSync(path.join(buildDir, dest), content);
+
             mdbp.versions[url(src)] = {url: destUrl, type: ext.substr(1)};
 
             return destUrl;
@@ -490,27 +504,34 @@ function commit(bundle) {
     var shared = ['image', 'font'];
     var css = [], js = [];
 
-    if (!mdbp.versions) {
-        mdbp.versions = readJSON(path.join(buildDir, 'versions.json'));
-    }
+
+    mdbp.versions = readJSON(path.join(buildDir, 'versions.json'));
+
 
     Object.keys(mdbp.versions).forEach(function(src) {
 
         var asset = mdbp.versions[src],
             append = ~shared.indexOf(asset.type) ? '' : bundle,
             dir = path.join(commitDir, paths.assets[asset.type], append),
-            dest = path.join(dir, asset.url);
+            dest = path.join(dir, asset.url),
+            destDir = path.dirname(dest),
+            isCss = asset.type === 'css',
+            isJs = asset.type === 'js';
 
         if (fs.existsSync(dest)) {
             log.warn(asset.url + ' exists, skipping');
         } else {
             log.info('copying ' + asset.url);
-            mkdir('-p', path.join(dir, path.dirname(asset.url)));
+
+            if (!fs.existsSync(destDir)) {
+                mkdir('-p', destDir);
+            }
             cp(path.join(buildDir, asset.url), dest);
+            if (isJs || isCss) exec('gzip -k -9 ' + dest);
         }
 
-        if (asset.type === 'css') css.push(asset);
-        else if (asset.type === 'js') js.push(asset);
+        if (isCss) css.push(asset);
+        else if (isJs) js.push(asset);
 
     });
 
